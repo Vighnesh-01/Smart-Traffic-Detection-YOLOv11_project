@@ -1,0 +1,16 @@
+# Ignore large model weights
+weights/*.pt
+
+# Ignore data and violation captures
+data/
+*.mp4
+*.avi
+
+# Ignore Python cache and environments
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Ignore OS-specific files
+.DS_Store

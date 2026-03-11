@@ -1,0 +1,23 @@
+# ── Core CV & Detection ──────────────────────────────────────
+ultralytics>=8.0.0          # YOLO v11 + ByteTrack bundled
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# ── Data & Config ────────────────────────────────────────────
+pandas>=2.0.0
+pyyaml>=6.0
+
+# ── PyTorch (explicit — imported directly in diagnostics & ocr_engine) ──
+# IMPORTANT: If you want GPU/CUDA, install THIS before everything else:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# If CPU-only, the line below installs the CPU version automatically:
+torch>=2.0.0
+torchvision>=0.15.0
+
+# ── OCR ──────────────────────────────────────────────────────
+easyocr>=1.7.0
+
+# ── Dashboard ────────────────────────────────────────────────
+streamlit>=1.32.0
+streamlit-autorefresh>=1.0.1  # Required for true timer-based dashboard refresh
+Pillow>=10.0.0

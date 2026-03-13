@@ -14,3 +14,6 @@ venv/
 
 # Ignore OS-specific files
 .DS_Store
+
+# Private Config (contains tokens)
+config.yaml

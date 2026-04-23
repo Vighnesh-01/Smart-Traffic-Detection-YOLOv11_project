@@ -47,7 +47,8 @@ def get_setup_coordinates(video_path: str):
             clicks.append((x, y))
             logger.info("Calibration click %d recorded at (%d, %d)", len(clicks), x, y)
 
-    cv2.namedWindow(WINDOW)
+    cv2.namedWindow(WINDOW,cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WINDOW, 1280, 720)
     cv2.setMouseCallback(WINDOW, click_event)
 
     instructions = [
@@ -63,7 +64,7 @@ def get_setup_coordinates(video_path: str):
     aborted = False
 
     while True:
-        display = frame.copy()
+        display = frame
         step    = len(clicks)
 
         # Draw recorded clicks

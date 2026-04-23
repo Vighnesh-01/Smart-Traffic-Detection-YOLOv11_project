@@ -13,8 +13,8 @@ from collections import defaultdict, deque
 
 logger = logging.getLogger(__name__)
 
-SPEED_SMOOTH_FRAMES = 5
-
+SPEED_SMOOTH_FRAMES = 10  # Increased from 5 to 10 for better stability
+MAX_SPEED_CAP = 150.0
 
 class ObjectTracker:
     def __init__(self, cfg: dict):
@@ -69,20 +69,32 @@ class ObjectTracker:
     # ─────────────────────────────────────────────────────────
     # TRACK-1: Optional[float] instead of float | None
     def _estimate_speed(self, obj_id: int) -> Optional[float]:
-        """Average displacement over SPEED_SMOOTH_FRAMES to reduce noise."""
+        """Average displacement over SPEED_SMOOTH_FRAMES with a sanity cap."""
         if not self.speed_enabled or self.fps is None:
             return None
 
         hist = self._history[obj_id]
+        # We need enough history to calculate an average
         if len(hist) < SPEED_SMOOTH_FRAMES + 1:
             return None
 
-        # Use centre-Y for speed (less noisy than bottom edge)
-        window   = [cy for cy, _ in list(hist)[-SPEED_SMOOTH_FRAMES - 1:]]
+        # 1. Get the vertical center positions (cy) for the window
+        window = [cy for cy, _ in list(hist)[-SPEED_SMOOTH_FRAMES - 1:]]
+        
+        # 2. Calculate displacement between consecutive frames
         total_px = sum(abs(b - a) for a, b in zip(window, window[1:]))
-        avg_px   = total_px / SPEED_SMOOTH_FRAMES
+        avg_px = total_px / SPEED_SMOOTH_FRAMES
 
-        speed_kmh = (avg_px / self.ppm / (1.0 / self.fps)) * 3.6
+        # 3. Convert Pixels/Frame to km/h
+        # Formula: (Pixels / PPM) * FPS * 3.6
+        speed_kmh = (avg_px / self.ppm * self.fps) * 3.6
+        
+        # 4. Apply the "Sanity Cap" (The 222 km/h Fix)
+        if speed_kmh > MAX_SPEED_CAP:
+            # If the speed is impossible, return the previous known speed 
+            # or 0 to avoid false violation alerts.
+            return 0.0
+
         return round(speed_kmh, 1)
 
     # ─────────────────────────────────────────────────────────

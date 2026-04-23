@@ -23,7 +23,7 @@ from utils.notifier import send_telegram_alert
 
 from utils.detector         import TrafficDetector
 from utils.tracker          import ObjectTracker
-from utils.ocr_engine       import PlateReader
+from utils.ocr_engine       import OCREngine
 from utils.find_coordinates import get_setup_coordinates
 from utils.diagnostics      import run_system_check
 
@@ -94,14 +94,15 @@ def log_violation(obj_id, v_type, plate="N/A", speed=None):
 # ─────────────────────────────────────────────────────────────
 detector = TrafficDetector(
     vehicle_model_path=WEIGHTS,
+    plate_model_path="weights/plate_detector.pt",
     helmet_model_path=PATHS.get("helmet_weights"),
     confidence=CFG["detection"]["confidence"],
     # MAIN-3: vehicle_classes now read from config
     vehicle_classes=CFG["detection"]["vehicle_classes"],
 )
 tracker      = ObjectTracker(CFG)
-plate_reader = PlateReader(CFG)
-
+plate_reader = OCREngine(CFG)
+ocr_engine = OCREngine(confidence_threshold=0.3)
 SPEED_LIMIT  = CFG["speed"]["limit_kmh"]
 HELMET_ON    = CFG["helmet"]["enabled"]
 # MAIN-5: process every Nth frame — set to 1 to process all (slowest)
@@ -138,10 +139,31 @@ def save_violation_crop(frame, bbox, filename):
 
 
 def scan_plate(frame, bbox) -> str:
-    text = plate_reader.read_plate(frame, bbox)
-    if not text or text.strip() == "":
+    try:
+        # 1. Extract coordinates from bbox
+        x1, y1, x2, y2 = map(int, bbox)
+        
+        # 2. Crop the frame (with a tiny bit of padding for context)
+        padding = 5
+        h, w, _ = frame.shape
+        crop = frame[max(0, y1-padding):min(h, y2+padding), 
+                     max(0, x1-padding):min(w, x2+padding)]
+
+        if crop.size == 0:
+            return "UNREADABLE"
+
+        # 3. Call the new read_plate (which returns: text, confidence)
+        text, confidence = plate_reader.read_plate(crop)
+
+        # 4. Filter the results
+        if text in ["UNKNOWN", "LOW_CONF", "ERROR"] or not text.strip():
+            return "UNREADABLE"
+
+        return text.strip()
+        
+    except Exception as e:
+        logger.error(f"Scan failed: {e}")
         return "UNREADABLE"
-    return text.strip()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -161,18 +183,31 @@ plate_cache: Dict[int, str] = {}
 
 while cap.isOpened():
     success, frame = cap.read()
-    if not success:
-        break
-
+    if not success: break
     frame_count += 1
 
-    # MAIN-5: skip frames to reduce CPU load
-    if frame_count % FRAME_SKIP != 0:
-        # Still show the last processed frame so video doesn't stutter visually
-        cv2.imshow("Smart Traffic System  [q = quit]", frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-        continue
+    # 1. AI Logic (Only runs occasionally)
+    if frame_count % FRAME_SKIP == 0:
+        results = detector.detect_vehicles(frame)
+        objects = tracker.get_tracking_data(results)
+        # ... your violation/drawing logic here ...
+
+    # 2. Display Logic (Runs for EVERY frame)
+    # Define your scale once
+    display_scale = 0.5 
+    
+    # Calculate dimensions
+    width = int(frame.shape[1] * display_scale)
+    height = int(frame.shape[0] * display_scale)
+    
+    # Create the display version
+    display_frame = cv2.resize(frame, (width, height))
+
+    # Show ONLY the display_frame
+    cv2.imshow("Smart Traffic System  [q = quit]", display_frame)
+
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
 
     # Clear per-frame plate cache at start of each processed frame
     plate_cache.clear()
@@ -205,10 +240,43 @@ while cap.isOpened():
         # so if RED LIGHT and SPEEDING both fire for the same vehicle
         # in the same frame, OCR only runs once
         def get_plate(oid=obj_id, f=frame, b=[x1, y1, x2, y2]):
+            """
+            Two-stage license plate recognition:
+            1. Localize plate within vehicle crop.
+            2. Enhance and OCR the localized plate.
+            """
             if oid not in plate_cache:
-                logger.info("Scanning plate for vehicle %d...", oid)
-                plate_cache[oid] = scan_plate(f, b)
-                logger.info("Plate result for %d: %s", oid, plate_cache[oid])
+                logger.info("Starting Two-Stage scan for vehicle %d...", oid)
+                
+                # STEP A: Localization (Find the plate box inside the car crop)
+                # detector.get_plate_from_vehicle returns (v_crop, p_bbox)
+                v_crop, p_bbox = detector.get_plate_from_vehicle(f, b)
+                
+                if v_crop is not None and p_bbox is not None:
+                    # STEP B: Exact Cropping with Boundary Protection
+                    px1, py1, px2, py2 = map(int, p_bbox)
+                    h, w, _ = v_crop.shape
+                    
+                    # Clip coordinates to ensure they stay within the crop boundaries
+                    final_plate_img = v_crop[max(0, py1):min(h, py2), max(0, px1):min(w, px2)]
+                    
+                    if final_plate_img.size > 0:
+                        # STEP C: OCR (Pass the tightest possible crop to EasyOCR)
+                        # This uses the OCREngine class you defined earlier
+                        text, conf = ocr_engine.read_plate(final_plate_img) 
+                        
+                        # Filter results based on your preferred logic
+                        if text in ["UNKNOWN", "LOW_CONF", "ERROR"]:
+                            plate_cache[oid] = "SCANNING..." # Try again in next processed frame
+                        else:
+                            plate_cache[oid] = text
+                    else:
+                        plate_cache[oid] = "INVALID_CROP"
+                else:
+                    plate_cache[oid] = "PLATE_NOT_FOUND"
+                    
+                logger.info("Final Plate Result for %d: %s", oid, plate_cache[oid])
+            
             return plate_cache[oid]
 
         # ── RED LIGHT ─────────────────────────────────────────
@@ -323,4 +391,4 @@ try:
     total = len(pd.read_csv(LOG_CSV)) if os.path.exists(LOG_CSV) else 0
 except Exception:
     total = 0
-logger.info("Session ended. Total violations in log: %d", total)
+logger.info("Session ended. Total violations in log: %d", total) 
